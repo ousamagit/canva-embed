@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Oxymètre de pouls 3D</title>
+<style>
+:root{--bg:#eef1f6;--fg:#14202e;--card:#ffffffd9;--mut:#5b6b7c;--acc:#1f5fd6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1620;--fg:#e8eef5;--card:#1a2431d9;--mut:#9fb0c2;--acc:#5b9bff}}
+:root[data-theme="dark"]{--bg:#0f1620;--fg:#e8eef5;--card:#1a2431d9;--mut:#9fb0c2;--acc:#5b9bff}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#c{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
+.top{position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);padding:10px;display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+button{border:1px solid var(--mut);background:var(--card);color:var(--fg);padding:8px 12px;border-radius:999px;font:600 13px system-ui;cursor:pointer;backdrop-filter:blur(6px)}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.info{position:absolute;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom,0px));max-width:560px;margin:auto;background:var(--card);backdrop-filter:blur(8px);border-radius:14px;padding:10px 14px;line-height:1.4;font-size:13px}
+.info h2{margin:0 0 4px;font-size:15px;color:var(--acc)}
+.info ul{margin:4px 0 0;padding-left:18px}
+.lab{position:absolute;left:0;top:0;pointer-events:none;white-space:nowrap;font:600 12px system-ui;background:var(--card);color:var(--fg);padding:3px 8px;border-radius:6px;border-left:3px solid var(--acc);transform:translate(10px,-50%)}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="labs"></div>
+<div class="top">
+<button data-m="metro" class="on">6 · Métrologie</button>
+<button data-m="erreur">7 · Erreurs</button>
+<button data-m="exemple">8 · Mesure SpO₂</button>
+<button id="bEx">Vue éclatée</button>
+<button id="bLab" class="on">Légendes</button>
+<button id="bFin">Doigt</button>
+</div>
+<div class="info" id="info"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const INFO={
+metro:["Métrologie et caractéristiques techniques","<ul><li>LED rouge 660 nm + infrarouge 940 nm, photodiode en face</li><li>R = (AC₆₆₀/DC₆₆₀)/(AC₉₄₀/DC₉₄₀) → SpO₂ ≈ 110 − 25·R</li><li>Plage 70–100 % · précision ±2 % · FC 30–250 bpm</li></ul>"],
+erreur:["Sources d’erreur, bruit et limites","<ul><li>Mouvements · lumière ambiante forte · vernis foncé</li><li>Mauvaise perfusion (doigt froid) · COHb / MetHb</li></ul>"],
+exemple:["Exemple pratique : mesure de la SpO₂","<ul><li>Doigt propre et immobile, courbe régulière</li><li>Lecture : SpO₂ 98 %, FC 65 bpm, PI 10,0 → normal (≥ 95 %)</li></ul>"]};
+let mode="metro",ex=0,exT=0,fingerOn=false,showLab=true;
+const cv=document.getElementById("c");
+const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(40,1,0.1,100);
+scene.add(new THREE.AmbientLight(0xffffff,0.75));
+const dl=new THREE.DirectionalLight(0xffffff,0.8);dl.position.set(4,7,6);scene.add(dl);
+const G=new THREE.Group();scene.add(G);
+const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:0.4,metalness:0.05},o));
+function rbox(w,d,h,r,mat){const s=new THREE.Shape(),x=-w/2,y=-d/2;
+s.moveTo(x+r,y);s.lineTo(x+w-r,y);s.quadraticCurveTo(x+w,y,x+w,y+r);s.lineTo(x+w,y+d-r);s.quadraticCurveTo(x+w,y+d,x+w-r,y+d);s.lineTo(x+r,y+d);s.quadraticCurveTo(x,y+d,x,y+d-r);s.lineTo(x,y+r);s.quadraticCurveTo(x,y,x+r,y);
+const g=new THREE.ExtrudeGeometry(s,{depth:h-0.12,bevelEnabled:true,bevelThickness:0.06,bevelSize:0.06,bevelSegments:3,curveSegments:10});
+g.rotateX(-Math.PI/2);g.translate(0,-(h-0.12)/2,0);return new THREE.Mesh(g,mat)}
+function grp(base,dir){const g=new THREE.Group();g.userData={base:new THREE.Vector3(...base),dir:new THREE.Vector3(...dir)};G.add(g);return g}
+const white=M(0xf3f5f8,{roughness:0.3,transparent:true}),blue=M(0x1f4fbf,{roughness:0.25}),black=M(0x141414,{roughness:0.8});
+// Coque supérieure
+const topG=grp([0,0.75,0],[0,3,0]);
+topG.add(rbox(3.4,1.9,0.8,0.55,white));
+const panel=rbox(2.3,1.25,0.05,0.3,blue);panel.position.y=0.4;topG.add(panel);
+const dc=document.createElement("canvas");dc.width=288;dc.height=160;const dctx=dc.getContext("2d");const tex=new THREE.CanvasTexture(dc);
+const scr=new THREE.Mesh(new THREE.PlaneGeometry(1.45,0.8),new THREE.MeshBasicMaterial({map:tex}));
+scr.rotation.x=-Math.PI/2;scr.position.set(-0.2,0.47,0);topG.add(scr);
+const btn=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.05,24),M(0xffffff,{roughness:0.2}));
+btn.scale.set(1.5,1,0.8);btn.position.set(0.82,0.47,0);topG.add(btn);
+// Carte électronique
+const pcb=grp([0,0.52,0],[0,1.8,0]);
+const pb=new THREE.Mesh(new THREE.BoxGeometry(2.7,0.05,1.5),M(0x1f7a4a));pcb.add(pb);
+const oled=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.07,0.8),M(0x0a0a0a));oled.position.set(-0.2,0.06,0);pcb.add(oled);
+const ic=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.07,0.4),M(0x222));ic.position.set(-1.0,0.06,0.45);pcb.add(ic);
+const sw=new THREE.Mesh(new THREE.BoxGeometry(0.25,0.08,0.25),M(0x999999,{metalness:0.6}));sw.position.set(0.9,0.06,0);pcb.add(sw);
+const ledR=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.06,0.16),new THREE.MeshBasicMaterial({color:0xff2030}));ledR.position.set(0.4,-0.06,-0.15);pcb.add(ledR);
+const ledI=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.06,0.16),new THREE.MeshBasicMaterial({color:0xc040ff}));ledI.position.set(0.4,-0.06,0.15);pcb.add(ledI);
+// Coussinets silicone
+const upad=grp([0.4,0.35,0],[0,0.8,0]);upad.add(rbox(1.9,1.2,0.12,0.3,black));
+const lpad=grp([0.4,-0.35,0],[0,-0.8,0]);lpad.add(rbox(1.9,1.2,0.12,0.3,black));
+const pd=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.04,0.45),M(0x3a3a8a,{metalness:0.4}));pd.position.set(0,0.08,0);lpad.add(pd);
+// Doigt
+const finger=grp([0,0,0],[0,0,0]);
+const skin=M(0xe8a98a,{roughness:0.7});
+const fc=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,3.3,32),skin);fc.rotation.z=Math.PI/2;fc.position.x=0.75;fc.scale.set(1,1,1);
+const fcw=new THREE.Group();fcw.scale.y=0.7;fcw.add(fc);
+const tip=new THREE.Mesh(new THREE.SphereGeometry(0.4,32,24),skin);tip.position.x=-0.9;fcw.add(tip);finger.add(fcw);
+const polish=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.03,0.4),M(0x1b1f6b,{roughness:0.2}));polish.position.set(-0.6,0.29,0);finger.add(polish);
+finger.visible=false;
+// Piles
+const batt=grp([0,-0.66,0],[0,-1.9,0]);
+[-0.45,0.45].forEach(z=>{const b=new THREE.Mesh(new THREE.CylinderGeometry(0.17,0.17,2.2,20),M(0x2b2b2b));b.rotation.z=Math.PI/2;b.position.set(-0.2,0,z);batt.add(b);
+const c=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.1,16),M(0xcccccc,{metalness:0.8}));c.rotation.z=Math.PI/2;c.position.set(0.95,0,z);batt.add(c)});
+// Coque inférieure
+const low=grp([0,-0.7,0],[0,-3,0]);
+low.add(rbox(3.4,1.9,0.7,0.55,white));
+const post=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.75,1.3),white);post.position.set(-1.35,0.675,0);low.add(post);
+// Ressort + capuchons
+const pts=[];for(let i=0;i<=60;i++){const a=i*0.6;pts.push(new THREE.Vector3(Math.cos(a)*0.2,Math.sin(a)*0.2,(i/60-0.5)*0.9))}
+const spring=grp([-1.15,0,0],[-1.5,0,0]);
+spring.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),200,0.03,6),M(0xbbbbbb,{metalness:0.8,roughness:0.3})));
+function cap(z){const g=grp([-1.15,0,z*0.98],[0,0,z*1.7]);const m=new THREE.Mesh(new THREE.CylinderGeometry(0.33,0.33,0.12,32),blue);m.rotation.x=Math.PI/2;g.add(m);return g}
+const capL=cap(1),capR=cap(-1);
+// Faisceaux
+function beam(z,c){const b=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.16,1,16,1,true),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.5,depthWrite:false}));b.position.set(0.4,0,z);G.add(b);return b}
+const bR=beam(-0.15,0xff2030),bI=beam(0.15,0xc040ff);
+// Lumière ambiante
+const amb=new THREE.PointLight(0xfff2b0,0,14);amb.position.set(-3,3,2);scene.add(amb);
+const sun=new THREE.Mesh(new THREE.SphereGeometry(0.3,16,12),new THREE.MeshBasicMaterial({color:0xffe066}));sun.position.copy(amb.position);sun.visible=false;scene.add(sun);
+// Légendes
+const L=[["Coque supérieure (plastique ABS)",topG,[-1.2,0.35,0.7],1],["Écran OLED : SpO₂ · FC · PI",topG,[-0.2,0.47,-0.4],1],["Bouton marche / affichage",topG,[0.82,0.47,0.2],1],
+["Carte électronique + OLED",pcb,[-1.1,0,0.65],0],["LED rouge 660 nm + IR 940 nm",pcb,[0.4,-0.06,0.2],0],["Coussinet silicone",upad,[0.9,0,0.55],0],["Doigt (milieu absorbant)",finger,[1.9,0,0],2],
+["Photodiode (récepteur)",lpad,[0.4,0.08,0.2],0],["2 piles AAA",batt,[-1.2,0,0.55],0],["Ressort de rappel",spring,[0,0,0.4],0],["Capuchon de charnière",capL,[0,0,0.1],1],["Coque inférieure",low,[1.2,0,0.8],1]];
+const labs=document.getElementById("labs");
+L.forEach(l=>{l.el=document.createElement("div");l.el.className="lab";l.el.textContent=l[0];labs.appendChild(l.el)});
+// Écran
+const buf=new Array(24).fill(0.2);let t=0,lastPush=0;
+function ppg(p){return p<0.3?Math.sin(p/0.3*Math.PI/2):0.55*Math.exp(-(p-0.3)*4)}
+function drawScr(spo,pr,pi,noisy){
+dctx.fillStyle="#04070c";dctx.fillRect(0,0,288,160);
+dctx.fillStyle="#2f7dff";buf.forEach((v,i)=>{const h=v*70;dctx.fillRect(6+i*5.4,150-h,4,h)});
+const g=noisy?"#ff9f1c":"#3dff8a";
+dctx.fillStyle="#ffd84a";dctx.font="bold 15px monospace";dctx.fillText("SpO₂ %",6,18);dctx.fillText("PR bpm",190,18);
+dctx.fillStyle=g;dctx.font="bold 84px monospace";dctx.fillText(spo,2,100);
+dctx.font="bold 74px monospace";dctx.fillText(pr,165,100);
+dctx.font="bold 16px monospace";dctx.fillText("PI% "+pi,130,128);
+tex.needsUpdate=true}
+// Interaction
+let rx=0.4,ry=-0.55,drag=false,px=0,py=0;
+cv.addEventListener("pointerdown",e=>{drag=true;px=e.clientX;py=e.clientY;cv.setPointerCapture(e.pointerId)});
+cv.addEventListener("pointermove",e=>{if(!drag)return;ry+=(e.clientX-px)*0.008;rx=Math.max(-0.6,Math.min(1.2,rx+(e.clientY-py)*0.008));px=e.clientX;py=e.clientY});
+cv.addEventListener("pointerup",()=>drag=false);
+const $=id=>document.getElementById(id);
+function refresh(){document.querySelectorAll("[data-m]").forEach(b=>b.classList.toggle("on",b.dataset.m===mode));
+$("bEx").classList.toggle("on",exT===1);$("bLab").classList.toggle("on",showLab);$("bFin").classList.toggle("on",fingerOn);
+$("bEx").textContent=exT?"Assembler":"Vue éclatée";
+$("info").innerHTML="<h2>"+INFO[mode][0]+"</h2>"+INFO[mode][1];
+finger.visible=fingerOn;polish.visible=mode==="erreur";sun.visible=mode==="erreur"}
+document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{mode=b.dataset.m;fingerOn=mode!=="metro";refresh()});
+$("bEx").onclick=()=>{exT=exT?0:1;refresh()};
+$("bLab").onclick=()=>{showLab=!showLab;refresh()};
+$("bFin").onclick=()=>{fingerOn=!fingerOn;refresh()};
+refresh();
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}
+addEventListener("resize",resize);resize();
+const clock=new THREE.Clock(),v3=new THREE.Vector3();
+function loop(){requestAnimationFrame(loop);
+const dt=clock.getDelta();t+=dt;ex+=(exT-ex)*Math.min(1,dt*4);if(!drag)ry+=dt*0.12;
+const k=(innerWidth/innerHeight<0.8?1.45:1);
+cam.position.set(0,2.5+ex,(8.2+5.2*ex)*k);cam.lookAt(0,0,0);
+G.rotation.set(rx,ry,0);
+[topG,pcb,upad,lpad,finger,batt,low,spring,capL,capR].forEach(g=>g.position.copy(g.userData.base).addScaledVector(g.userData.dir,ex));
+white.opacity=(fingerOn&&ex<0.5)?0.28:1;
+const noisy=mode==="erreur",hr=noisy?90:65,p=(t*hr/60)%1,pulse=ppg(p);
+const yT=pcb.position.y-0.06,yB=lpad.position.y+0.1;
+[bR,bI].forEach((b,i)=>{b.position.y=(yT+yB)/2;b.scale.y=yT-yB;b.visible=fingerOn||ex>0.3;b.material.opacity=0.3+0.3*(1-pulse*(0.6-i*0.2))});
+if(noisy){finger.position.x=Math.sin(t*23)*0.06;finger.position.y=Math.sin(t*31)*0.05;amb.intensity=2+1.5*Math.sin(t*17);sun.scale.setScalar(1+0.2*Math.sin(t*17))}else amb.intensity=0;
+fcw.scale.set(1,0.7*(1+0.04*pulse),1+0.04*pulse);
+if(t-lastPush>0.05){lastPush=t;let v=0.1+0.85*pulse;if(noisy)v+=(Math.random()-0.5)*0.6;buf.push(Math.max(0.03,Math.min(1,v)));buf.shift()}
+noisy?drawScr(Math.round(86+Math.random()*12),Math.round(80+Math.random()*30),(Math.random()*3).toFixed(1),true):drawScr(98,65,"10.0",false);
+renderer.render(scene,cam);
+G.updateMatrixWorld(true);
+const W=innerWidth,H=innerHeight;
+L.forEach(l=>{const vis=showLab&&(l[3]===1||ex>0.5)&&!(l[3]===2&&!fingerOn);
+l.el.style.display=vis?"block":"none";if(!vis)return;
+v3.set(...l[2]);l[1].localToWorld(v3);v3.project(cam);
+l.el.style.left=((v3.x*0.5+0.5)*W)+"px";l.el.style.top=((-v3.y*0.5+0.5)*H)+"px"})}
+loop();
+</script>
+</body></html>
